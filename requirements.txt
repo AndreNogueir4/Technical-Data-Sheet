@@ -1,0 +1,6 @@
+motor
+lxml
+colorlog
+fake-useragent
+httpx
+unidecode
