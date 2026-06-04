@@ -4,3 +4,8 @@ colorlog
 fake-useragent
 httpx
 unidecode
+aiohttp
+curl_cffi
+yarl
+Pillow
+pytesseract
