@@ -42,17 +42,17 @@ O pipeline é dividido em **duas fases independentes**, que podem ser executadas
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │                         FASE 1 — Catálogo                      │
-│                                                                  │
+│                                                                │
 │  Fabricantes → Modelos → Anos → Versões → Salva no MongoDB     │
-│                                         (status: "todo")        │
+│                                         (status: "todo")       │
 └────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌────────────────────────────────────────────────────────────────┐
-│                       FASE 2 — Ficha Técnica                    │
-│                                                                  │
+│                       FASE 2 — Ficha Técnica                   │
+│                                                                │
 │  Lê veículos "todo" do DB → Busca ficha técnica → Salva specs  │
-│                              (status: "done")                   │
+│                              (status: "done")                  │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -309,9 +309,3 @@ Os logs são coloridos por nível e referência, escritos tanto no terminal quan
 ## Licença
 
 Distribuído sob a licença [MIT](https://opensource.org/licenses/MIT).
-
----
-
-<div align="center">
-Feito por <a href="https://github.com/AndreNogueir4">André Nogueira</a>
-</div>
