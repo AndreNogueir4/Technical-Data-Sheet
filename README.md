@@ -13,48 +13,43 @@
 
 ---
 
-> [!WARNING]
-> **🔧 REFACTOR EM ANDAMENTO**
->
-> Este projeto está passando por uma reestruturação completa. A arquitetura atual (`src/scrapers/`, `src/runners/`) será substituída por uma nova abordagem mais modular e testável — baseada nos módulos `CarrosWeb/` e `Common/` que já estão sendo desenvolvidos. Partes do código atual podem estar instáveis ou incompletas.
-
----
-
 ## Sobre o Projeto
 
 O **Technical Data Sheet** é um crawler assíncrono que percorre sites especializados em veículos do mercado brasileiro para coletar fichas técnicas completas: especificações de motor, transmissão, dimensões, desempenho, consumo e equipamentos de série/opcionais.
 
-Os dados são persistidos em **MongoDB** e coletados através de um pipeline em duas fases, com suporte a proxy e contornar técnicas anti-scraping.
+Os dados são persistidos em **MongoDB** com detecção de mudanças — o crawler só baixa versões que ainda não estão no banco, evitando re-scraping desnecessário.
 
 ### Fontes de Dados
 
 | Site | Status | Observações |
 |------|--------|-------------|
-| [fichacompleta.com.br](https://www.fichacompleta.com.br) | ✅ Funcional | Fonte principal, suporte a CAPTCHA via proxy |
+| [fichacompleta.com.br](https://www.fichacompleta.com.br) | ✅ Funcional | Suporte a CAPTCHA via proxy |
 | [carrosnaweb.com.br](https://www.carrosnaweb.com.br) | 🔧 Em desenvolvimento | Impersonação de browser + OCR para valores em imagem |
 
 ---
 
 ## Como Funciona
 
-O pipeline é dividido em **duas fases independentes**, que podem ser executadas juntas ou separadamente:
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        Pipeline por Site                          │
+│                                                                  │
+│  Montadoras → Modelos → Versões/Anos                             │
+│       │            │          │                                  │
+│       ▼            ▼          ▼                                  │
+│  fichacompleta_automakers  fichacompleta_models                  │
+│                             (referência + scraped_hrefs)         │
+│                                    │                             │
+│                    Novo href? ──────┤                             │
+│                       Sim ▼        │ Não → skip                  │
+│                   Busca ficha      │                             │
+│                       │           │                             │
+│                       ▼           │                             │
+│                  vehicle_specs ◄───┘                             │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                         FASE 1 — Catálogo                      │
-│                                                                │
-│  Fabricantes → Modelos → Anos → Versões → Salva no MongoDB     │
-│                                         (status: "todo")       │
-└────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌────────────────────────────────────────────────────────────────┐
-│                       FASE 2 — Ficha Técnica                   │
-│                                                                │
-│  Lê veículos "todo" do DB → Busca ficha técnica → Salva specs  │
-│                              (status: "done")                  │
-└────────────────────────────────────────────────────────────────┘
-```
+Na primeira execução, tudo é baixado. Nas execuções seguintes, apenas versões/anos novos que ainda não estão em `scraped_hrefs` são coletados.
 
 ### Anti-Scraping
 
@@ -86,55 +81,32 @@ O pipeline é dividido em **duas fases independentes**, que podem ser executadas
 ```
 Technical-Data-Sheet/
 │
-├── main.py                          # Ponto de entrada — CLI
-│
 ├── src/
-│   ├── cli/
-│   │   └── parser.py                # Definição dos subcomandos CLI (argparse)
+│   ├── __main__.py                      # Ponto de entrada — CLI
 │   │
-│   ├── runners/                     # Orquestradores por site
-│   │   ├── fichacompleta.py         # Pipeline completo do fichacompleta
-│   │   └── carronaweb.py            # Pipeline completo do carrosnaweb
+│   ├── CarrosWeb/                       # Scraper do carrosnaweb
+│   │   ├── CarrosWebCrawler.py          # Orquestrador
+│   │   ├── CarrosWebParser.py           # Parser HTML com OCR
+│   │   └── CarrosWebRequestFactory.py  # Fábrica de requisições
 │   │
-│   ├── scrapers/                    # Scrapers por site e função
-│   │   ├── fichacompleta/
-│   │   │   ├── automakers.py
-│   │   │   ├── models.py
-│   │   │   ├── version_and_years.py
-│   │   │   └── technical_sheet.py
-│   │   └── carronaweb/
-│   │       ├── automakers.py
-│   │       ├── models.py
-│   │       ├── years.py
-│   │       ├── version_link_consultation.py
-│   │       └── technical_sheet.py
+│   ├── FichaCompleta/                   # Scraper do fichacompleta
+│   │   ├── FichaCompletaCrawler.py      # Orquestrador com detecção incremental
+│   │   ├── FichaCompletaParser.py       # Parser HTML
+│   │   └── FichaCompletaRequestFactory.py
 │   │
-│   ├── CarrosWeb/                   # 🔧 Nova arquitetura (refactor)
-│   │   ├── CarrosWebCrawler.py      # Orquestrador completo
-│   │   ├── CarrosWebParser.py       # Parser HTML com resolução de duplicatas
-│   │   ├── CarrosWebRequestFactory.py # Fábrica de requisições HTTP
-│   │   └── example.html             # HTML de exemplo da ficha técnica
+│   ├── Common/                          # Utilitários compartilhados
+│   │   ├── DatabaseRepository.py        # Repositório MongoDB (motor)
+│   │   ├── NetworkManager.py            # Gerenciador de sessões HTTP
+│   │   └── utils.py                     # OCR para imagens anti-scraping
 │   │
-│   ├── Common/                      # 🔧 Utilitários compartilhados (refactor)
-│   │   ├── NetworkManager.py        # Gerenciador de sessões HTTP
-│   │   └── utils.py                 # OCR para imagens anti-scraping
+│   ├── Logger/                          # Sistema de logs
+│   │   ├── Logger.py
+│   │   ├── Formatter.py
+│   │   ├── Handlers.py
+│   │   └── Repository.py
 │   │
-│   ├── commons/
-│   │   └── DatabaseRepository.py    # Repositório MongoDB (motor)
-│   │
-│   ├── Model/
-│   │   └── Response.py              # Dataclass de resposta HTTP
-│   │
-│   ├── logger/                      # Sistema de logs colorido
-│   │   ├── logger.py
-│   │   ├── formatter.py
-│   │   ├── handlers.py
-│   │   └── repository.py
-│   │
-│   └── utils/                       # Utilitários de proxy por site
-│       ├── proxy.py
-│       ├── carroweb/
-│       └── fichacompleta/
+│   └── Model/
+│       └── Response.py                  # Dataclass de resposta HTTP
 │
 └── requirements.txt
 ```
@@ -144,7 +116,7 @@ Technical-Data-Sheet/
 ## Pré-requisitos
 
 - Python **3.11+**
-- MongoDB rodando localmente na porta `27017`
+- MongoDB (local ou via Docker)
 - Tesseract OCR instalado no sistema
 
 ```bash
@@ -156,6 +128,15 @@ sudo apt install tesseract-ocr
 
 # macOS
 brew install tesseract
+```
+
+### MongoDB via Docker
+
+```bash
+docker run -d -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=admin \
+  --name mongo mongo:latest
 ```
 
 ---
@@ -181,7 +162,7 @@ pip install -r requirements.txt
 ## Como Usar
 
 ```bash
-python main.py <comando> [opções]
+python -m src <comando> [opções]
 ```
 
 ### Subcomandos
@@ -189,94 +170,77 @@ python main.py <comando> [opções]
 | Comando | Descrição |
 |---------|-----------|
 | `site <nome>` | Executa o scraper de um site específico |
-| `full` | Executa todos os scrapers em sequência |
-| `maintenance` | Comandos de manutenção do banco de dados |
+| `full` | Executa todos os scrapers em paralelo |
+| `run-forever` | Executa todos os scrapers em loop contínuo |
 
 ### Exemplos
 
 ```bash
-# Coletar tudo do fichacompleta (fases 1 e 2)
-python main.py site fichacompleta
+# Coletar fichas do fichacompleta
+python -m src site fichacompleta
 
-# Só coletar o catálogo (fabricantes, modelos, versões) — Fase 1
-python main.py site fichacompleta --phase 1
+# Coletar fichas do carrosnaweb
+python -m src site carrosweb
 
-# Só buscar as fichas técnicas dos veículos já no banco — Fase 2
-python main.py site carronaweb --phase 2
+# Executar todos os scrapers em paralelo
+python -m src full
 
-# Executar todos os scrapers
-python main.py full
+# Rodar em loop (intervalo padrão: 3600s)
+python -m src run-forever
 
-# Ver estatísticas do banco
-python main.py maintenance --show-stats
+# Loop com intervalo customizado
+python -m src run-forever --interval 1800
 ```
-
-### Fases (`--phase`)
-
-| Fase | O que faz |
-|------|-----------|
-| `1` | Percorre fabricantes → modelos → anos → versões e salva no MongoDB com `status: "todo"` |
-| `2` | Lê os veículos `"todo"` do banco e busca a ficha técnica completa para cada um |
-| `3` | Executa as fases 1 e 2 em sequência *(padrão)* |
 
 ---
 
 ## Banco de Dados
 
-O projeto usa MongoDB com duas collections principais:
+O projeto usa MongoDB com as seguintes collections:
 
-### `vehicle`
-Registro de cada versão de veículo encontrada no catálogo.
+### `fichacompleta_automakers`
+Catálogo de montadoras e seus modelos encontrados no site.
 
 ```json
 {
-  "_id": "ObjectId",
-  "timestamp": "04-06-2026 14:32:00",
-  "status": "todo | in_progress | done",
-  "reference": "fichacompleta | carroweb",
+  "automaker": "volkswagen",
+  "models": ["gol", "polo", "tiguan"],
+  "updated_at": "2026-06-10T19:32:57"
+}
+```
+
+### `fichacompleta_models`
+Controle de versões/anos por modelo, usado para detecção incremental.
+
+```json
+{
   "automaker": "volkswagen",
   "model": "gol",
-  "year": "2020",
-  "version": "1.0 MPI Trendline"
+  "reference": "https://www.fichacompleta.com.br/carros/volkswagen/gol/",
+  "versions": {
+    "2020 - 1.0 MPI Trendline": "/carros/volkswagen/gol/2020-1-0-mpi-trendline/"
+  },
+  "years": ["2020"],
+  "scraped_hrefs": ["/carros/volkswagen/gol/2020-1-0-mpi-trendline/"],
+  "updated_at": "2026-06-10T19:32:57"
 }
 ```
 
 ### `vehicle_specs`
-Ficha técnica completa de cada veículo.
+Ficha técnica completa de cada versão de veículo.
 
 ```json
 {
-  "automaker": "volkswagen",
-  "model": "gol",
-  "version": "1.0 MPI Trendline",
-  "year": "2020",
-  "result": {
-    "Motor": "1.0 MPI",
-    "Potência": "82 cv",
-    "Torque": "10,2 kgfm",
-    "Câmbio": "Manual 5 marchas",
-    "..."
-  },
-  "equipments": [
-    "Ar-condicionado",
-    "Direção elétrica",
-    "..."
-  ]
+  "montadora": "volkswagen",
+  "modelo": "gol",
+  "versao": "2020 - 1.0 MPI Trendline",
+  "ano": "2020",
+  "Motor": "1.0 MPI",
+  "Potência": "82 cv",
+  "Torque": "10,2 kgfm",
+  "Câmbio": "Manual 5 marchas",
+  "equipamentos": ["Ar-condicionado", "Direção elétrica"]
 }
-```
-
----
-
-## Concorrência
-
-O pipeline usa `asyncio.Semaphore(5)` para limitar o número de requisições simultâneas, evitando sobrecarga nos servidores e bloqueios por rate limiting.
-
-```python
-semaphore = asyncio.Semaphore(5)
-
-async def process_model(automaker, model):
-    async with semaphore:
-        ...
 ```
 
 ---
@@ -286,21 +250,23 @@ async def process_model(automaker, model):
 Os logs são coloridos por nível e referência, escritos tanto no terminal quanto em arquivo.
 
 ```
-[14:32:01] INFO     fichacompleta | ✅ Technical sheet inserted for: /carros/vw/gol/...
-[14:32:02] WARNING  carroweb      | ⚠️ CAPTCHA detected, retrying with proxy...
-[14:32:05] ERROR    main          | ❌ Unexpected error: Connection timeout
+2026-06-10 19:32:57 [INFO]    Starting FichaCompleta crawler
+2026-06-10 19:33:48 [INFO]    get_automakers - found 123 automakers
+2026-06-10 19:33:49 [INFO]    volkswagen : gol | get_version_years - found 12 versions
+2026-06-10 19:33:49 [INFO]    volkswagen : gol | nothing new, skipping
+2026-06-10 19:33:51 [WARNING] get_version_years - unexpected status: 404
 ```
 
 ---
 
-## Roadmap do Refactor
+## Roadmap
 
 - [x] `NetworkManager` — gerenciador de sessões unificado (aiohttp + curl_cffi)
 - [x] `CarrosWebRequestFactory` — fábrica de requisições para o carrosnaweb
 - [x] `CarrosWebParser` — parser completo com OCR e desambiguação de labels duplicados
 - [x] `CarrosWebCrawler` — orquestrador com resolução de valores em imagem via OCR
-- [ ] Migrar `scrapers/fichacompleta` para a nova arquitetura
-- [ ] Migrar `runners/` para usar os novos Crawlers
+- [x] `FichaCompletaCrawler` — migrado para nova arquitetura com detecção incremental
+- [x] CLI com subcomandos `site`, `full` e `run-forever`
 - [ ] Testes unitários
 - [ ] Docker + docker-compose
 
