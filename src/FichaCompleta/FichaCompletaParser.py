@@ -1,4 +1,3 @@
-import re
 from lxml import html
 from unidecode import unidecode
 
@@ -37,15 +36,28 @@ class FichaCompletaParser:
         versions: dict[str, str] = {}
         years: list[str] = []
 
-        for element in tree.xpath('//div/a[normalize-space(text())]'):
-            text = element.text.strip()
-            href = element.get('href', '').strip()
-            if not href or any(w in text for w in self._WORDS_REMOVE):
+        for card in tree.xpath("//div[@class='ver-card']"):
+            hrefs = card.xpath(".//a[@class='ver-card__link']/@href")
+            year_texts = card.xpath(".//span[@class='ver-card__year']/text()")
+            name_texts = card.xpath(".//span[@class='ver-card__name']/text()")
+            fuel_texts = card.xpath(".//span[@class='ver-card__fuel']/text()")
+
+            if not hrefs or not year_texts:
                 continue
+
+            href = hrefs[0].strip()
+            year = year_texts[0].strip()
+            name = name_texts[0].strip() if name_texts else ''
+            fuel = fuel_texts[0].strip() if fuel_texts else ''
+
+            version = ' '.join(filter(None, [name, fuel]))
+            text = f"{year} {version}".strip()
+
+            if any(w in text for w in self._WORDS_REMOVE):
+                continue
+
             versions[text] = href
-            m = re.match(r'^\d{4}', text)
-            if m and m.group(0) not in ('Carregando', 'Carregando...'):
-                years.append(m.group(0))
+            years.append(year)
 
         return versions, years
 
@@ -55,9 +67,18 @@ class FichaCompletaParser:
 
     def technical_sheet(self, content: str) -> dict:
         tree = html.fromstring(content)
-        keys = tree.xpath('//div[1]/b/text()')
-        values = [v.strip() for v in tree.xpath('//div[2]/text()') if v.strip()]
-        specs = dict(zip(keys, values))
+        specs = {}
+
+        for item in tree.xpath("//div[contains(@class, 'ent-spec-item')]"):
+            label = item.xpath(".//span[@class='ent-spec-label']/text()")
+            value_parts = item.xpath(".//span[@class='ent-spec-value']//text()")
+            if not label or not value_parts:
+                continue
+            key = label[0].strip()
+            val = ' '.join(v.strip() for v in value_parts if v.strip())
+            if key and val:
+                specs[key] = val
+
         equipments = [e.strip() for e in tree.xpath('//li/span/text()') if e.strip()]
         specs['equipamentos'] = equipments or ['Equipment not listed for this model']
         return specs

@@ -1,3 +1,5 @@
+import asyncio
+import random
 from src.Logger import get_logger
 from src.Common.DatabaseRepository import DatabaseRepository
 from src.FichaCompleta.FichaCompletaParser import FichaCompletaParser
@@ -13,9 +15,9 @@ class FichaCompletaCrawler:
         self._parser = parser
         self._db = db
 
-    async def crawler(self) -> int:
+    async def catalog_phase(self) -> int:
         automakers = await self._get_automakers()
-        total = 0
+        total_jobs = 0
 
         for automaker in automakers:
             models = await self._get_models(automaker)
@@ -23,6 +25,8 @@ class FichaCompletaCrawler:
                 await self._db.upsert_automaker(automaker, models)
 
             for model in models:
+                await asyncio.sleep(random.uniform(3, 10))
+
                 versions, years = await self._get_version_years(automaker, model)
                 if not versions:
                     continue
@@ -30,31 +34,48 @@ class FichaCompletaCrawler:
                 reference = f'{self._factory._base_url}/carros/{automaker}/{model}/'
                 await self._db.upsert_model(automaker, model, reference, versions, years)
 
-                scraped = await self._db.get_scraped_hrefs(automaker, model)
-                new_pairs = [
-                    (name, href, year)
-                    for (name, href), year in zip(versions.items(), years)
-                    if href not in scraped
-                ]
+                for (version_name, href), year in zip(versions.items(), years):
+                    doc = await self._db.insert_vehicle(automaker, model, year, version_name, href)
+                    if doc:
+                        total_jobs += 1
 
-                if not new_pairs:
-                    logger.info(f'{automaker} : {model} | nothing new, skipping')
-                    continue
+            await asyncio.sleep(random.uniform(5, 15))
 
-                for version_name, href, year in new_pairs:
-                    sheet = await self._technical_sheet(automaker, model, href)
-                    if sheet:
-                        sheet.update({
-                            'montadora': automaker,
-                            'modelo': model,
-                            'versao': version_name,
-                            'ano': year,
-                        })
-                        await self._db.save_sheet(sheet)
-                        await self._db.mark_href_scraped(automaker, model, href)
-                        total += 1
+        logger.info(f'catalog_phase - {total_jobs} new jobs created')
+        return total_jobs
 
-        logger.info(f'crawler - finished, {total} new technical sheets saved')
+    async def sheet_worker(self) -> int:
+        total = 0
+
+        while True:
+            jobs = await self._db.pop_pending_jobs(limit=2)
+            if not jobs:
+                logger.info('sheet_worker - no pending jobs, done')
+                break
+
+            for job in jobs:
+                href = job['reference']
+                sheet = await self._technical_sheet(job['automaker'], job['model'], href)
+                if sheet:
+                    sheet.update({
+                        'montadora': job['automaker'],
+                        'modelo': job['model'],
+                        'versao': job['version'],
+                        'ano': job['year'],
+                        'source': 'fichacompleta',
+                    })
+                    await self._db.save_sheet(sheet)
+                    await self._db.update_vehicle(str(job['_id']), {'status': 'done'})
+                    total += 1
+                else:
+                    await self._db.update_vehicle(str(job['_id']), {'status': 'error'})
+                    logger.warning(f'sheet_worker - failed job {job["_id"]} [{href}], marked as error')
+
+            delay = random.uniform(10, 50)
+            logger.info(f'sheet_worker - processed {len(jobs)} jobs, sleeping {delay:.0f}s')
+            await asyncio.sleep(delay)
+
+        logger.info(f'sheet_worker - finished, {total} sheets saved')
         return total
 
     async def _get_automakers(self) -> list[str]:
