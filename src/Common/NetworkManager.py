@@ -1,3 +1,4 @@
+import re
 import timeit
 import aiohttp
 import curl_cffi
@@ -7,6 +8,12 @@ from typing import Any
 from aiohttp import ClientSession
 from contextlib import asynccontextmanager
 from src.Model.Response import Response
+
+
+def _charset_from_headers(headers) -> str:
+    content_type = headers.get('content-type', '')
+    m = re.search(r'charset=([^\s;]+)', content_type, re.IGNORECASE)
+    return m.group(1) if m else 'latin-1'
 
 
 class NetworkManager:
@@ -29,7 +36,7 @@ class NetworkManager:
                 status=r.status_code,
                 response_time=elapsed,
                 cookies=r.cookies,
-                content=r.text,
+                content=r.content.decode(_charset_from_headers(r.headers), errors='replace'),
                 headers=r.headers,
             )
         else:
@@ -40,7 +47,7 @@ class NetworkManager:
                     status=r.status,
                     response_time=elapsed,
                     cookies=r.cookies,
-                    content=await r.text(),
+                    content=await r.text(errors='replace'),
                     headers=r.headers,
                 )
 
@@ -61,7 +68,7 @@ class NetworkManager:
                 status=r.status_code,
                 response_time=elapsed,
                 cookies=r.cookies,
-                content=r.text,
+                content=r.content.decode(_charset_from_headers(r.headers), errors='replace'),
                 headers=r.headers,
             )
         else:
@@ -73,7 +80,7 @@ class NetworkManager:
                     status=r.status,
                     response_time=elapsed,
                     cookies=r.cookies,
-                    content=await r.text(),
+                    content=await r.text(errors='replace'),
                     headers=r.headers,
                 )
 

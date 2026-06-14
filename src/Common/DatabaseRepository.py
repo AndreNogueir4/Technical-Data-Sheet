@@ -68,6 +68,19 @@ class DatabaseRepository:
             logger.error(f'Error updating: {e}')
             return 0
 
+    async def pop_pending_jobs(self, limit: int = 2) -> list[dict]:
+        docs = []
+        for _ in range(limit):
+            doc = await self.db.vehicle.find_one_and_update(
+                {'status': 'todo'},
+                {'$set': {'status': 'in_progress'}},
+                return_document=True,
+            )
+            if doc is None:
+                break
+            docs.append(doc)
+        return docs
+
     async def get_vehicles_by_reference(self, reference: str) -> list[dict]:
         from src.Logger import get_logger
         logger = get_logger()
