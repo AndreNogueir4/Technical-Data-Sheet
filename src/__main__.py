@@ -36,21 +36,61 @@ async def run_carrosweb() -> int:
     return len(sheets)
 
 
-async def run_fichacompleta() -> int:
-    logger.info('Starting FichaCompleta crawler')
+async def run_carrosweb_catalog() -> int:
+    logger.info('Starting CarrosWeb catalog phase')
+    db = DatabaseRepository()
+    async with NetworkManager.create() as network:
+        factory = CarrosWebRequestFactory(network)
+        parser = CarrosWebParser()
+        crawler = CarrosWebCrawler(factory, parser, db)
+        count = await crawler.catalog_phase()
+
+    logger.info(f'CarrosWeb catalog: {count} new jobs created')
+    return count
+
+
+async def run_carrosweb_worker() -> int:
+    logger.info('Starting CarrosWeb sheet worker')
+    db = DatabaseRepository()
+    async with NetworkManager.create() as network:
+        factory = CarrosWebRequestFactory(network)
+        parser = CarrosWebParser()
+        crawler = CarrosWebCrawler(factory, parser, db)
+        count = await crawler.sheet_worker()
+
+    logger.info(f'CarrosWeb worker: {count} sheets saved')
+    return count
+
+
+async def run_fichacompleta_catalog() -> int:
+    logger.info('Starting FichaCompleta catalog phase')
     db = DatabaseRepository()
     async with NetworkManager.create() as network:
         factory = FichaCompletaRequestFactory(network, db)
         parser = FichaCompletaParser()
         crawler = FichaCompletaCrawler(factory, parser, db)
-        count = await crawler.crawler()
+        count = await crawler.catalog_phase()
 
-    logger.info(f'FichaCompleta: saved {count} new sheets')
+    logger.info(f'FichaCompleta catalog: {count} new jobs created')
+    return count
+
+
+async def run_fichacompleta_worker() -> int:
+    logger.info('Starting FichaCompleta sheet worker')
+    db = DatabaseRepository()
+    async with NetworkManager.create() as network:
+        factory = FichaCompletaRequestFactory(network, db)
+        parser = FichaCompletaParser()
+        crawler = FichaCompletaCrawler(factory, parser, db)
+        count = await crawler.sheet_worker()
+
+    logger.info(f'FichaCompleta worker: {count} sheets saved')
     return count
 
 
 async def run_all() -> None:
-    await asyncio.gather(run_carrosweb(), run_fichacompleta())
+    await asyncio.gather(run_carrosweb(), run_fichacompleta_catalog())
+    await run_fichacompleta_worker()
 
 
 # ------------------------------------------------------------------ #
@@ -90,7 +130,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest='command', required=True)
 
     site_p = sub.add_parser('site', help='Rodar scraper de um site específico')
-    site_p.add_argument('site', choices=['carrosweb', 'fichacompleta'])
+    site_p.add_argument('site', choices=[
+        'carrosweb',
+        'carrosweb-catalog',
+        'carrosweb-worker',
+        'fichacompleta-catalog',
+        'fichacompleta-worker',
+    ])
 
     sub.add_parser('full', help='Rodar todos os scrapers')
 
@@ -108,8 +154,14 @@ async def main() -> None:
         if args.command == 'site':
             if args.site == 'carrosweb':
                 await run_carrosweb()
-            else:
-                await run_fichacompleta()
+            elif args.site == 'carrosweb-catalog':
+                await run_carrosweb_catalog()
+            elif args.site == 'carrosweb-worker':
+                await run_carrosweb_worker()
+            elif args.site == 'fichacompleta-catalog':
+                await run_fichacompleta_catalog()
+            elif args.site == 'fichacompleta-worker':
+                await run_fichacompleta_worker()
 
         elif args.command == 'full':
             await run_all()
