@@ -2,7 +2,6 @@ import asyncio
 import signal
 import sys
 import argparse
-
 from src.Logger import get_logger
 from src.Common.NetworkManager import NetworkManager
 from src.Common.DatabaseRepository import DatabaseRepository
@@ -15,10 +14,6 @@ from src.FichaCompleta.FichaCompletaCrawler import FichaCompletaCrawler
 
 logger = get_logger('main', 'main')
 
-
-# ------------------------------------------------------------------ #
-# Runners                                                              #
-# ------------------------------------------------------------------ #
 
 async def run_carrosweb() -> int:
     logger.info('Starting CarrosWeb crawler')
@@ -92,11 +87,6 @@ async def run_all() -> None:
     await asyncio.gather(run_carrosweb(), run_fichacompleta_catalog())
     await run_fichacompleta_worker()
 
-
-# ------------------------------------------------------------------ #
-# run-forever                                                          #
-# ------------------------------------------------------------------ #
-
 async def run_forever(interval: int = 3600) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -119,11 +109,6 @@ async def run_forever(interval: int = 3600) -> None:
             pass
 
     logger.info('run_forever stopped gracefully')
-
-
-# ------------------------------------------------------------------ #
-# CLI                                                                  #
-# ------------------------------------------------------------------ #
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Technical Data Sheet scraper')
