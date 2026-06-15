@@ -9,10 +9,6 @@ class DatabaseRepository:
         self.client = AsyncIOMotorClient(uri)
         self.db = self.client[db_name]
 
-    # ------------------------------------------------------------------ #
-    # Vehicles                                                             #
-    # ------------------------------------------------------------------ #
-
     async def insert_vehicle(self, automaker: str, model: str, year: str, version: str, reference: str):
         from src.Logger import get_logger
         logger = get_logger()
@@ -97,10 +93,6 @@ class DatabaseRepository:
             logger.error(f'Error getting vehicles by ref {reference}: {e}')
             return []
 
-    # ------------------------------------------------------------------ #
-    # FichaCompleta catalog                                                #
-    # ------------------------------------------------------------------ #
-
     async def upsert_automaker(self, automaker: str, models: list[str]) -> None:
         await self.db.fichacompleta_automakers.update_one(
             {'automaker': automaker},
@@ -134,10 +126,6 @@ class DatabaseRepository:
             {'$addToSet': {'scraped_hrefs': href}},
         )
 
-    # ------------------------------------------------------------------ #
-    # Technical sheets                                                     #
-    # ------------------------------------------------------------------ #
-
     async def save_sheet(self, sheet: dict) -> None:
         await self.db.vehicle_specs.insert_one(sheet)
 
@@ -161,17 +149,9 @@ class DatabaseRepository:
             logger.error(f'Error inserting specs: {e}')
             return False
 
-    # ------------------------------------------------------------------ #
-    # Proxies                                                              #
-    # ------------------------------------------------------------------ #
-
     async def get_proxies(self) -> list[str]:
         proxies = await self.db.proxies.find({'status': 'active'}).to_list(100)
         return [p['proxy'] for p in proxies]
-
-    # ------------------------------------------------------------------ #
-    # Helpers                                                              #
-    # ------------------------------------------------------------------ #
 
     @staticmethod
     def _remove_accents(text: str) -> str:
