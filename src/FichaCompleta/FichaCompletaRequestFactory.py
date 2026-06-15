@@ -12,10 +12,6 @@ class FichaCompletaRequestFactory:
         self._db = db
         self._base_url = 'https://www.fichacompleta.com.br'
 
-    # ------------------------------------------------------------------ #
-    # Public endpoints                                                     #
-    # ------------------------------------------------------------------ #
-
     async def get_automakers(self) -> Response:
         url = f'{self._base_url}/carros/marcas/'
         return await self._fetch(url, referer=f'{self._base_url}/carros/')
@@ -33,10 +29,6 @@ class FichaCompletaRequestFactory:
         model = self._normalize(model)
         url = f'{self._base_url}{href}'
         return await self._fetch(url, referer=f'{self._base_url}/carros/{automaker}/{model}/')
-
-    # ------------------------------------------------------------------ #
-    # Internal                                                             #
-    # ------------------------------------------------------------------ #
 
     async def _fetch(self, url: str, referer: str = '') -> Response:
         headers = self._headers(referer)

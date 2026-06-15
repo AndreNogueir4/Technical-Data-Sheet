@@ -9,10 +9,6 @@ class FichaCompletaParser:
         tree = html.fromstring(content)
         return any('Digite o código:' in t for t in tree.xpath('//text()'))
 
-    # ------------------------------------------------------------------ #
-    # Catalog parsers                                                      #
-    # ------------------------------------------------------------------ #
-
     def automakers(self, content: str) -> list[str]:
         tree = html.fromstring(content)
         items = tree.xpath('//span/text()')
@@ -60,10 +56,6 @@ class FichaCompletaParser:
             years.append(year)
 
         return versions, years
-
-    # ------------------------------------------------------------------ #
-    # Technical sheet parser                                               #
-    # ------------------------------------------------------------------ #
 
     def technical_sheet(self, content: str) -> dict:
         tree = html.fromstring(content)
