@@ -5,14 +5,13 @@ from lxml import html
 class CarrosWebParser:
     def __init__(self):
         self._words_remove = {
-            'Página Principal', 'Comparativo', 'Avaliação', 'Notícias',
-            'Opinião do Dono', 'Concessionárias', 'Ranking',
-            'Carros Mais Vendidos', 'Todos', 'Hatchback', 'Sedã', 'Perua',
-            'Minivan', 'Cupê', 'Conversível', 'SUV', 'Picape', 'Van',
-            'Furgão', 'Jipe', 'Chassi-cabine', 'Mapa do site', 'Sobre o site',
-            'Privacidade', 'Termos de uso', 'Mobile', 'Fale Conosco',
-            'Comunicar erro', 'Carros mais Vendidos', 'Próximos Lançamentos',
-            '\r\n\t\t', 'Comparativos', 'Versão Clássica',
+            'página principal', 'comparativo', 'avaliação', 'notícias',
+            'opinião do dono', 'concessionárias', 'ranking',
+            'carros mais vendidos', 'todos', 'hatchback', 'sedã', 'perua',
+            'minivan', 'cupê', 'conversível', 'suv', 'picape', 'van',
+            'furgão', 'jipe', 'chassi-cabine', 'mapa do site', 'sobre o site',
+            'privacidade', 'termos de uso', 'mobile', 'fale conosco',
+            'comunicar erro', 'próximos lançamentos', 'comparativos', 'versão clássica',
         }
         self._section_headers = {
             'MOTOR', 'TRANSMISSÃO', 'TRANSMISSAO', 'SUSPENSÃO', 'SUSPENSAO',
@@ -31,17 +30,17 @@ class CarrosWebParser:
     def automakers(self, content: str) -> list[str]:
         tree = html.fromstring(content)
         automakers = tree.xpath('//a/font/text()')
-        return [maker.lower() for maker in automakers if maker not in self._words_remove]
+        return [m.strip().lower() for m in automakers if m.strip() and m.strip().lower() not in self._words_remove]
 
     def models(self, content: str) -> list[str]:
         tree = html.fromstring(content)
         models = tree.xpath('//a/font/text()')
-        return [model.lower() for model in models if model not in self._words_remove]
+        return [m.strip().lower() for m in models if m.strip() and m.strip().lower() not in self._words_remove]
 
     def years(self, content: str) -> list[str]:
         tree = html.fromstring(content)
         years = tree.xpath('//a/font/text()')
-        return [year.lower() for year in years if year not in self._words_remove]
+        return [y.strip().lower() for y in years if y.strip() and y.strip().lower() not in self._words_remove]
 
     def versions_code(self, content: str) -> dict:
         tree = html.fromstring(content)
