@@ -32,7 +32,7 @@ Os dados são persistidos em **MongoDB** com detecção de mudanças — o crawl
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                        Pipeline por Site                          │
+│                        Pipeline por Site                         │
 │                                                                  │
 │  Montadoras → Modelos → Versões/Anos                             │
 │       │            │          │                                  │
@@ -40,11 +40,11 @@ Os dados são persistidos em **MongoDB** com detecção de mudanças — o crawl
 │  fichacompleta_automakers  fichacompleta_models                  │
 │                             (referência + scraped_hrefs)         │
 │                                    │                             │
-│                    Novo href? ──────┤                             │
+│                    Novo href? ─────┤                             │
 │                       Sim ▼        │ Não → skip                  │
 │                   Busca ficha      │                             │
-│                       │           │                             │
-│                       ▼           │                             │
+│                       │            │                             │
+│                       ▼            │                             │
 │                  vehicle_specs ◄───┘                             │
 └──────────────────────────────────────────────────────────────────┘
 ```
