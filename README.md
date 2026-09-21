@@ -34,22 +34,26 @@ Os dados são persistidos em **MongoDB** com detecção de mudanças — o crawl
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Pipeline por Site                         │
 │                                                                  │
-│  Montadoras → Modelos → Versões/Anos                             │
-│       │            │          │                                  │
-│       ▼            ▼          ▼                                  │
-│  fichacompleta_automakers  fichacompleta_models                  │
-│                             (referência + scraped_hrefs)         │
-│                                    │                             │
-│                    Novo href? ─────┤                             │
-│                       Sim ▼        │ Não → skip                  │
-│                   Busca ficha      │                             │
-│                       │            │                             │
-│                       ▼            │                             │
-│                  vehicle_specs ◄───┘                             │
+│  catalog:  Montadoras → Modelos → Versões/Anos                   │
+│                                  │                               │
+│                                  ▼                               │
+│                          vehicle (status: todo)                  │
+│                          já existe? → skip                       │
+│                                  │                               │
+│  worker:   claim em lote ────────┤                               │
+│                  │               │                               │
+│                  ▼               ▼                               │
+│            Busca ficha     status: in_progress                   │
+│                  │                                               │
+│                  ▼                                               │
+│            vehicle_specs + status: done (ou error)               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Na primeira execução, tudo é baixado. Nas execuções seguintes, apenas versões/anos novos que ainda não estão em `scraped_hrefs` são coletados.
+Os dois estágios são independentes: o `catalog` enfileira o que falta e o `worker` drena a fila.
+Cada job carrega o seu `source`, então os workers dos dois sites nunca disputam as mesmas tarefas.
+
+Na primeira execução, tudo é baixado. Nas execuções seguintes, apenas versões/anos que ainda não estão na collection `vehicle` viram novos jobs.
 
 ### Anti-Scraping
 
@@ -84,26 +88,28 @@ Technical-Data-Sheet/
 ├── src/
 │   ├── __main__.py                      # Ponto de entrada — CLI
 │   │
+│   ├── RunnerTechnicalSheet/            # Camada de execução
+│   │   ├── Runner.py                    # Orquestra sites e estágios (once / loop)
+│   │   ├── Container.py                 # Composition root — injeção de dependência
+│   │   └── sites.py                     # Registry: peças que cada site usa
+│   │
 │   ├── CarrosWeb/                       # Scraper do carrosnaweb
 │   │   ├── CarrosWebCrawler.py          # Orquestrador
 │   │   ├── CarrosWebParser.py           # Parser HTML com OCR
-│   │   └── CarrosWebRequestFactory.py  # Fábrica de requisições
+│   │   └── CarrosWebRequestFactory.py   # Fábrica de requisições
 │   │
 │   ├── FichaCompleta/                   # Scraper do fichacompleta
-│   │   ├── FichaCompletaCrawler.py      # Orquestrador com detecção incremental
+│   │   ├── FichaCompletaCrawler.py      # Orquestrador
 │   │   ├── FichaCompletaParser.py       # Parser HTML
 │   │   └── FichaCompletaRequestFactory.py
 │   │
-│   ├── Common/                          # Utilitários compartilhados
+│   ├── Common/                          # Infraestrutura compartilhada
+│   │   ├── crawler.py                   # Classe base: fila de jobs e requisições
+│   │   ├── logger.py                    # LoggerFactory + handler MongoDB
+│   │   ├── settings.py                  # Configuração (CLI + variáveis de ambiente)
 │   │   ├── DatabaseRepository.py        # Repositório MongoDB (motor)
 │   │   ├── NetworkManager.py            # Gerenciador de sessões HTTP
 │   │   └── utils.py                     # OCR para imagens anti-scraping
-│   │
-│   ├── Logger/                          # Sistema de logs
-│   │   ├── Logger.py
-│   │   ├── Formatter.py
-│   │   ├── Handlers.py
-│   │   └── Repository.py
 │   │
 │   └── Model/
 │       └── Response.py                  # Dataclass de resposta HTTP
@@ -162,35 +168,46 @@ pip install -r requirements.txt
 ## Como Usar
 
 ```bash
-python -m src <comando> [opções]
+python -m src [site] [estágio] [opções]
 ```
 
-### Subcomandos
+Um único comando: os argumentos posicionais dizem **o que** rodar, as flags dizem **como**.
 
-| Comando | Descrição |
-|---------|-----------|
-| `site <nome>` | Executa o scraper de um site específico |
-| `full` | Executa todos os scrapers em paralelo |
-| `run-forever` | Executa todos os scrapers em loop contínuo |
+| Argumento | Valores | Default | Descrição |
+|-----------|---------|---------|-----------|
+| `site` | `all`, `carrosweb`, `fichacompleta` | `all` | Qual site coletar |
+| `estágio` | `all`, `catalog`, `worker` | `all` | `catalog` enfileira veículos, `worker` baixa as fichas |
+| `--loop` | — | desligado | Repete os ciclos até Ctrl+C |
+| `--interval` | segundos | `3600` | Intervalo entre ciclos quando `--loop` |
 
 ### Exemplos
 
 ```bash
-# Coletar fichas do fichacompleta
-python -m src site fichacompleta
+# Tudo, uma vez (os dois sites em paralelo)
+python -m src
 
-# Coletar fichas do carrosnaweb
-python -m src site carrosweb
+# Só o fichacompleta, catálogo + fichas
+python -m src fichacompleta
 
-# Executar todos os scrapers em paralelo
-python -m src full
+# Só o catálogo do carrosnaweb
+python -m src carrosweb catalog
 
-# Rodar em loop (intervalo padrão: 3600s)
-python -m src run-forever
+# Só drenar a fila de fichas do carrosnaweb
+python -m src carrosweb worker
 
-# Loop com intervalo customizado
-python -m src run-forever --interval 1800
+# Loop contínuo, ciclo a cada 30 minutos
+python -m src --loop --interval 1800
 ```
+
+### Variáveis de Ambiente
+
+| Variável | Default | Descrição |
+|----------|---------|-----------|
+| `MONGO_URI` | `mongodb://admin:admin@localhost:27017/` | Conexão com o MongoDB |
+| `MONGO_DB` | `technical_sheet` | Nome do banco |
+| `BATCH_SIZE` | `2` | Jobs reservados por vez pelo worker |
+| `MIN_DELAY` / `MAX_DELAY` | `10` / `50` | Intervalo aleatório (s) entre lotes |
+| `CFFI_IMPERSONATE` | `chrome124` | Perfil de browser do `curl_cffi` |
 
 ---
 
@@ -209,8 +226,23 @@ Catálogo de montadoras e seus modelos encontrados no site.
 }
 ```
 
+### `vehicle`
+Fila de trabalho: um documento por versão de veículo, com `status` (`todo` → `in_progress` → `done`/`error`).
+
+```json
+{
+  "source": "fichacompleta",
+  "status": "todo",
+  "reference": "/carros/volkswagen/gol/2020-1-0-mpi-trendline/",
+  "automaker": "volkswagen",
+  "model": "gol",
+  "year": "2020",
+  "version": "2020 1.0 MPI Trendline"
+}
+```
+
 ### `fichacompleta_models`
-Controle de versões/anos por modelo, usado para detecção incremental.
+Catálogo de versões/anos por modelo.
 
 ```json
 {
@@ -221,7 +253,6 @@ Controle de versões/anos por modelo, usado para detecção incremental.
     "2020 - 1.0 MPI Trendline": "/carros/volkswagen/gol/2020-1-0-mpi-trendline/"
   },
   "years": ["2020"],
-  "scraped_hrefs": ["/carros/volkswagen/gol/2020-1-0-mpi-trendline/"],
   "updated_at": "2026-06-10T19:32:57"
 }
 ```
@@ -266,7 +297,8 @@ Os logs são coloridos por nível e referência, escritos tanto no terminal quan
 - [x] `CarrosWebParser` — parser completo com OCR e desambiguação de labels duplicados
 - [x] `CarrosWebCrawler` — orquestrador com resolução de valores em imagem via OCR
 - [x] `FichaCompletaCrawler` — migrado para nova arquitetura com detecção incremental
-- [x] CLI com subcomandos `site`, `full` e `run-forever`
+- [x] CLI unificada (`site` + `estágio` + `--loop`)
+- [x] Injeção de dependência via composition root (`Container`)
 - [ ] Testes unitários
 - [ ] Docker + docker-compose
 
