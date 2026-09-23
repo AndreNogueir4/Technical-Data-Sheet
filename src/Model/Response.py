@@ -26,14 +26,14 @@ class Response:
         return items
 
     def _dict_parse(self, item):
-        if type(item) is URL or type(item) is httpx.URL:
+        if isinstance(item, (URL, httpx.URL)):
             return str(item)
-        if type(item) is CIMultiDictProxy:
+        if isinstance(item, CIMultiDictProxy):
             return dict(item)
-        if isinstance(self.content, bytes):
+        if isinstance(item, bytes):
             return None
-        if isinstance(self.content, dict):
-            return self._dict_content_parse(self.content)
+        if isinstance(item, dict):
+            return self._dict_content_parse(item)
         return item
 
     def _dict_content_parse(self, item):
@@ -45,7 +45,8 @@ class Response:
                     item[key] = str(value)
         return item
 
-    def _is_large_int(self, value: int):
+    @staticmethod
+    def _is_large_int(value: int) -> bool:
         if value == 0:
             return False
         num_bits = value.bit_length()
