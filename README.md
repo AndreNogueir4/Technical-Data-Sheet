@@ -37,10 +37,10 @@ Os dados são persistidos em **MongoDB** com detecção de mudanças — o crawl
 │  catalog:  Montadoras → Modelos → Versões/Anos                   │
 │                                  │                               │
 │                                  ▼                               │
-│                          vehicle (status: todo)                  │
+│                            job (status: todo)                    │
 │                          já existe? → skip                       │
 │                                  │                               │
-│  worker:   claim em lote ────────┤                               │
+│  worker:   pool de N workers ────┤                               │
 │                  │               │                               │
 │                  ▼               ▼                               │
 │            Busca ficha     status: in_progress                   │
@@ -51,9 +51,10 @@ Os dados são persistidos em **MongoDB** com detecção de mudanças — o crawl
 ```
 
 Os dois estágios são independentes: o `catalog` enfileira o que falta e o `worker` drena a fila.
-Cada job carrega o seu `source`, então os workers dos dois sites nunca disputam as mesmas tarefas.
+O pool de workers é um só para todos os sites — cada job carrega o seu `source` e o
+`TechnicalSheet` entrega cada um ao crawler certo, respeitando o intervalo daquele site.
 
-Na primeira execução, tudo é baixado. Nas execuções seguintes, apenas versões/anos que ainda não estão na collection `vehicle` viram novos jobs.
+Na primeira execução, tudo é baixado. Nas execuções seguintes, apenas versões/anos que ainda não estão na collection `job` viram novos jobs.
 
 ### Anti-Scraping
 
@@ -77,6 +78,7 @@ Na primeira execução, tudo é baixado. Nas execuções seguintes, apenas vers�
 - **motor** — driver assíncrono para MongoDB
 - **pytesseract + Pillow** — OCR para valores em imagem
 - **colorlog** — logs coloridos e estruturados
+- **dependency-injector** — composition root declarativo
 
 ---
 
@@ -88,30 +90,34 @@ Technical-Data-Sheet/
 ├── src/
 │   ├── __main__.py                      # Ponto de entrada — CLI
 │   │
-│   ├── RunnerTechnicalSheet/            # Camada de execução
-│   │   ├── Runner.py                    # Orquestra sites e estágios (once / loop)
-│   │   ├── Container.py                 # Composition root — injeção de dependência
-│   │   └── sites.py                     # Registry: peças que cada site usa
+│   ├── TechnicalSheetRunner/            # Camada de execução
+│   │   ├── TechnicalSheet.py            # Runner: CLI, estágios e pool de workers
+│   │   └── TechnicalSheetContainer.py   # Composition root (dependency-injector)
 │   │
 │   ├── CarrosWeb/                       # Scraper do carrosnaweb
 │   │   ├── CarrosWebCrawler.py          # Orquestrador
 │   │   ├── CarrosWebParser.py           # Parser HTML com OCR
-│   │   └── CarrosWebRequestFactory.py   # Fábrica de requisições
+│   │   ├── CarrosWebRequestFactory.py   # Fábrica de requisições
+│   │   └── CarrosWebContainer.py        # Peças do site, montadas por DI
 │   │
 │   ├── FichaCompleta/                   # Scraper do fichacompleta
 │   │   ├── FichaCompletaCrawler.py      # Orquestrador
 │   │   ├── FichaCompletaParser.py       # Parser HTML
-│   │   └── FichaCompletaRequestFactory.py
+│   │   ├── FichaCompletaRequestFactory.py
+│   │   └── FichaCompletaContainer.py    # Peças do site, montadas por DI
 │   │
 │   ├── Common/                          # Infraestrutura compartilhada
-│   │   ├── crawler.py                   # Classe base: fila de jobs e requisições
+│   │   ├── crawler.py                   # Classe base de todo crawler de site
 │   │   ├── logger.py                    # LoggerFactory + handler MongoDB
-│   │   ├── settings.py                  # Configuração (CLI + variáveis de ambiente)
+│   │   ├── settings.py                  # Configuração (variáveis de ambiente)
 │   │   ├── DatabaseRepository.py        # Repositório MongoDB (motor)
 │   │   ├── NetworkManager.py            # Gerenciador de sessões HTTP
-│   │   └── utils.py                     # OCR para imagens anti-scraping
+│   │   ├── exceptions.py                # Erros do domínio
+│   │   └── utils.py                     # OCR + normalização de texto
 │   │
 │   └── Model/
+│       ├── Job.py                       # Job: uma versão de veículo a coletar
+│       ├── SheetMode.py                 # Modos de execução (all / catalog / worker)
 │       └── Response.py                  # Dataclass de resposta HTTP
 │
 └── requirements.txt
@@ -168,45 +174,79 @@ pip install -r requirements.txt
 ## Como Usar
 
 ```bash
-python -m src [site] [estágio] [opções]
+python -m src [-s SOURCE] [-m MODE]
 ```
-
-Um único comando: os argumentos posicionais dizem **o que** rodar, as flags dizem **como**.
 
 | Argumento | Valores | Default | Descrição |
 |-----------|---------|---------|-----------|
-| `site` | `all`, `carrosweb`, `fichacompleta` | `all` | Qual site coletar |
-| `estágio` | `all`, `catalog`, `worker` | `all` | `catalog` enfileira veículos, `worker` baixa as fichas |
-| `--loop` | — | desligado | Repete os ciclos até Ctrl+C |
-| `--interval` | segundos | `3600` | Intervalo entre ciclos quando `--loop` |
+| `-s`, `--source` | `all`, `carrosweb`, `fichacompleta` | `all` | Qual fonte coletar |
+| `-m`, `--mode` | `all`, `catalog`, `worker` | `all` | O `SheetMode` da execução |
+
+Os modos (`src/Model/SheetMode.py`):
+
+| Modo | O que faz |
+|------|-----------|
+| `all` | Catálogo + fichas, **termina** quando não sobra nada para coletar |
+| `catalog` | Só descobre veículos e enfileira jobs |
+| `worker` | Só drena a fila, e **fica de pé**: dorme `SLEEP_TIME` sempre que ela seca |
 
 ### Exemplos
 
 ```bash
-# Tudo, uma vez (os dois sites em paralelo)
+# Tudo, até pegar todos os veículos dos dois sites
 python -m src
 
 # Só o fichacompleta, catálogo + fichas
-python -m src fichacompleta
+python -m src -s fichacompleta
 
 # Só o catálogo do carrosnaweb
-python -m src carrosweb catalog
+python -m src -s carrosweb -m catalog
 
-# Só drenar a fila de fichas do carrosnaweb
-python -m src carrosweb worker
-
-# Loop contínuo, ciclo a cada 30 minutos
-python -m src --loop --interval 1800
+# Worker permanente: drena a fila dos dois sites até Ctrl+C
+python -m src -m worker
 ```
+
+### Quanto Tempo Leva
+
+O crawler é lento de propósito: entre uma requisição e outra ele espera um intervalo
+aleatório, senão o site bloqueia. Sirva-se destes números como referência.
+
+| Execução | Tempo | Resultado |
+|----------|-------|-----------|
+| `-s fichacompleta -m catalog` | **~1h28** | 120 montadoras, 1.318 modelos, **20.397 jobs** enfileirados |
+
+> Medido com os valores padrão (`MIN_DELAY=10`, `MAX_DELAY=50`), em uma execução do zero
+> com o banco vazio. Reexecuções são bem mais rápidas: o catálogo só enfileira versão
+> que ainda não está na collection `job`.
+
+O `worker` é a parte cara. Cada ficha custa uma requisição mais o intervalo entre jobs,
+divididos por `WORKER_COUNT` workers em paralelo — então a conta aproximada é:
+
+```
+tempo ≈ jobs × média(MIN_DELAY, MAX_DELAY) ÷ WORKER_COUNT
+```
+
+Para os 20.397 jobs do fichacompleta, no padrão (30s de média, 10 workers), dá algo em
+torno de **17 horas**. É trabalho para deixar rodando em `-m worker`, não para esperar
+sentado — dá para parar com Ctrl+C e retomar depois, que a fila continua de onde parou.
+
+> **Não aperte os intervalos para “ir mais rápido” em produção.** `MIN_DELAY`/`MAX_DELAY`
+> baixos derrubam a coleta: o fichacompleta responde com captcha e o carrosnaweb com
+> página de erro, e o crawler recua sozinho. Use valores curtos só para testar o fluxo.
 
 ### Variáveis de Ambiente
 
 | Variável | Default | Descrição |
 |----------|---------|-----------|
-| `MONGO_URI` | `mongodb://admin:admin@localhost:27017/` | Conexão com o MongoDB |
+| `MONGO_URI` | `mongodb://localhost:27017/` | Conexão com o MongoDB |
 | `MONGO_DB` | `technical_sheet` | Nome do banco |
-| `BATCH_SIZE` | `2` | Jobs reservados por vez pelo worker |
-| `MIN_DELAY` / `MAX_DELAY` | `10` / `50` | Intervalo aleatório (s) entre lotes |
+| `WORKER_COUNT` | `10` | Workers simultâneos no pool |
+| `SLEEP_TIME` | `5` | Espera (s) com a fila vazia no modo `worker` |
+| `BATCH_SIZE` | `4` | Jobs reservados por vez, por fonte |
+| `CONCURRENCY` | `2` | Requisições simultâneas do `get_list_result` |
+| `MAX_ATTEMPTS` | `3` | Tentativas antes de um job virar `error` |
+| `MAX_FAILURES` | `5` | Falhas seguidas antes de recuar de uma fonte |
+| `MIN_DELAY` / `MAX_DELAY` | `10` / `50` | Intervalo aleatório (s) entre dois jobs |
 | `CFFI_IMPERSONATE` | `chrome124` | Perfil de browser do `curl_cffi` |
 
 ---
@@ -226,18 +266,33 @@ Catálogo de montadoras e seus modelos encontrados no site.
 }
 ```
 
-### `vehicle`
-Fila de trabalho: um documento por versão de veículo, com `status` (`todo` → `in_progress` → `done`/`error`).
+### `job`
+Fila de trabalho: um documento por versão de veículo.
+É a collection que o modelo `Job` (`src/Model/Job.py`) representa — todo job entra como `todo`.
+
+| `status` | Significado |
+|----------|-------------|
+| `todo` | Na fila, esperando um worker |
+| `in_progress` | Reservado por um worker |
+| `done` | Ficha coletada e salva em `vehicle_specs` |
+| `invalid` | A página respondeu, mas não existe ficha: referência morta (404) ou página vazia. Não é repetido e o motivo fica no campo `reason` |
+| `error` | Falhou `MAX_ATTEMPTS` vezes seguidas — bloqueio, captcha, rede |
+
+A diferença entre `invalid` e `error` é o que adianta repetir: `error` é problema nosso ou
+do momento e volta para a fila até esgotar as tentativas; `invalid` é problema do dado e
+morre na primeira tentativa, sem queimar requisição.
 
 ```json
 {
-  "source": "fichacompleta",
+  "timestamp": "21-09-2026 18:52:03",
   "status": "todo",
+  "source": "fichacompleta",
   "reference": "/carros/volkswagen/gol/2020-1-0-mpi-trendline/",
   "automaker": "volkswagen",
   "model": "gol",
   "year": "2020",
-  "version": "2020 1.0 MPI Trendline"
+  "version": "2020 1.0 MPI Trendline",
+  "attempts": 0
 }
 ```
 
@@ -297,8 +352,9 @@ Os logs são coloridos por nível e referência, escritos tanto no terminal quan
 - [x] `CarrosWebParser` — parser completo com OCR e desambiguação de labels duplicados
 - [x] `CarrosWebCrawler` — orquestrador com resolução de valores em imagem via OCR
 - [x] `FichaCompletaCrawler` — migrado para nova arquitetura com detecção incremental
-- [x] CLI unificada (`site` + `estágio` + `--loop`)
-- [x] Injeção de dependência via composition root (`Container`)
+- [x] CLI unificada (`-s` source + `-m` mode)
+- [x] Injeção de dependência via composition root (`TechnicalSheetContainer`)
+- [x] Pool de workers compartilhado entre as fontes (`TechnicalSheet`)
 - [ ] Testes unitários
 - [ ] Docker + docker-compose
 
