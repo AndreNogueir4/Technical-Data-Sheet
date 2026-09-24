@@ -1,57 +1,45 @@
-import httpx
 from yarl import URL
-from httpx import Cookies
-from dataclasses import dataclass
+from typing import Any, ClassVar
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from http.cookies import SimpleCookie
-from multidict import CIMultiDictProxy
 
 
 @dataclass
 class Response:
+    """A resposta HTTP, igual para os dois backends do `NetworkManager`.
+
+    O aiohttp e o curl_cffi devolvem tipos diferentes para headers e cookies — os dois
+    são `Mapping`, e é por aí que `to_dict` os normaliza.
+    """
+
+    # Não vão para o log: cookie é credencial.
+    HIDDEN: ClassVar[tuple[str, ...]] = ('cookies',)
+
     url: URL | None = None
     status: int | None = 200
     response_time: float | None = 0.0
-    cookies: SimpleCookie[str] | Cookies | None = None
-    content: str | dict | bytes | None = None
-    headers: CIMultiDictProxy[str] | None = None
+    cookies: SimpleCookie[str] | Mapping[str, str] | None = None
+    content: str | bytes | None = None
+    headers: Mapping[str, str] | None = None
 
-    def to_dict(self):
-        items = {}
-        for key, value in vars(self).items():
-            if key in ['status', 'response_time']:
-                items[key] = value
-            elif key != 'cookies':
-                item = self._dict_parse(value)
-                items[key] = item
-        return items
-
-    def _dict_parse(self, item):
-        if isinstance(item, (URL, httpx.URL)):
-            return str(item)
-        if isinstance(item, CIMultiDictProxy):
-            return dict(item)
-        if isinstance(item, bytes):
-            return None
-        if isinstance(item, dict):
-            return self._dict_content_parse(item)
-        return item
-
-    def _dict_content_parse(self, item):
-        for key, value in item.items():
-            if isinstance(value, dict):
-                item[key] = self._dict_content_parse(value)
-            elif isinstance(value, int):
-                if self._is_large_int(value):
-                    item[key] = str(value)
-        return item
+    def to_dict(self) -> dict:
+        """Uma cópia serializável da resposta, para log e depuração."""
+        return {
+            field.name: self._parse(getattr(self, field.name))
+            for field in fields(self)
+            if field.name not in self.HIDDEN
+        }
 
     @staticmethod
-    def _is_large_int(value: int) -> bool:
-        if value == 0:
-            return False
-        num_bits = value.bit_length()
-        num_bytes = (num_bits + 7) // 8
-        return num_bytes > 8
+    def _parse(item: Any) -> Any:
+        if isinstance(item, URL):
+            return str(item)
+        if isinstance(item, bytes):
+            return None
+        if isinstance(item, Mapping):
+            return dict(item)
+        return item
 
     def __repr__(self):
         return repr(self.to_dict())
