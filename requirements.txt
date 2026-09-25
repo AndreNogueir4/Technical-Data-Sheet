@@ -2,10 +2,10 @@ motor
 lxml
 colorlog
 fake-useragent
-httpx
 unidecode
 aiohttp
 curl_cffi
 yarl
 Pillow
 pytesseract
+dependency-injector
