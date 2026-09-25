@@ -1,139 +1,94 @@
-import asyncio
 import random
-from src.Logger import get_logger
+import asyncio
+from typing import Any
+from src.Model.Job import Job
+from src.Common.Crawler import Crawler
+from src.Common.RateLimiter import RateLimiter
+from src.Common.utils import repeatable
 from src.Common.DatabaseRepository import DatabaseRepository
 from src.FichaCompleta.FichaCompletaParser import FichaCompletaParser
 from src.FichaCompleta.FichaCompletaRequestFactory import FichaCompletaRequestFactory
 
-logger = get_logger('FichaCompletaCrawler', reference='fichacompleta')
 
+class FichaCompletaCrawler(Crawler):
+    _FILLER_KEYS = frozenset({'equipamentos'})
 
-class FichaCompletaCrawler:
     def __init__(self, factory: FichaCompletaRequestFactory, parser: FichaCompletaParser,
-                 db: DatabaseRepository):
+                 db: DatabaseRepository, limiter: RateLimiter, source: str = 'fichacompleta',
+                 concurrent: int = 30, try_limit: int = 4):
+        super().__init__(source, db, limiter, concurrent, try_limit)
         self._factory = factory
         self._parser = parser
-        self._db = db
 
     async def catalog_phase(self) -> int:
-        automakers = await self._get_automakers()
         total_jobs = 0
 
-        for automaker in automakers:
+        for automaker in await self._get_automakers():
             models = await self._get_models(automaker)
             if models:
-                await self._db.upsert_automaker(automaker, models)
+                await self.database.upsert_automaker(automaker, models)
 
             for model in models:
-                await asyncio.sleep(random.uniform(3, 10))
+                await asyncio.sleep(random.uniform(1, 5))
 
                 versions, years = await self._get_version_years(automaker, model)
                 if not versions:
                     continue
 
-                reference = f'{self._factory._base_url}/carros/{automaker}/{model}/'
-                await self._db.upsert_model(automaker, model, reference, versions, years)
+                reference = self._factory.model_url(automaker, model)
+                await self.database.upsert_model(automaker, model, reference, versions, years)
 
                 for (version_name, href), year in zip(versions.items(), years):
-                    doc = await self._db.insert_vehicle(automaker, model, year, version_name, href)
-                    if doc:
+                    job = Job(source=self.source, reference=href, automaker=automaker,
+                              model=model, year=year, version=version_name)
+                    if await self.database.insert_job(job):
                         total_jobs += 1
 
-            await asyncio.sleep(random.uniform(5, 15))
+            await asyncio.sleep(random.uniform(2, 8))
 
-        logger.info(f'catalog_phase - {total_jobs} new jobs created')
+        self.logger.info(f'catalog_phase - {total_jobs} new jobs created')
         return total_jobs
 
-    async def sheet_worker(self) -> int:
-        total = 0
+    @repeatable
+    async def fetch_sheet(self, job: Job) -> dict:
+        href = job.reference
+        sheet = await self.fetch_sheet_response(
+            f'technical_sheet [{href}]',
+            self._factory.get_technical_sheet(job.automaker, job.model, href),
+            self._parser.technical_sheet,
+        )
+        if sheet:
+            self.logger.info(f'technical_sheet [{href}] - parsed')
+        return sheet
 
-        while True:
-            jobs = await self._db.pop_pending_jobs(limit=2)
-            if not jobs:
-                logger.info('sheet_worker - no pending jobs, done')
-                break
+    def blocked_reason(self, content: Any) -> str | None:
+        return 'captcha detected' if self._parser.is_captcha(content) else None
 
-            for job in jobs:
-                href = job['reference']
-                sheet = await self._technical_sheet(job['automaker'], job['model'], href)
-                if sheet:
-                    sheet.update({
-                        'montadora': job['automaker'],
-                        'modelo': job['model'],
-                        'versao': job['version'],
-                        'ano': job['year'],
-                        'source': 'fichacompleta',
-                    })
-                    await self._db.save_sheet(sheet)
-                    await self._db.update_vehicle(str(job['_id']), {'status': 'done'})
-                    total += 1
-                else:
-                    await self._db.update_vehicle(str(job['_id']), {'status': 'error'})
-                    logger.warning(f'sheet_worker - failed job {job["_id"]} [{href}], marked as error')
-
-            delay = random.uniform(10, 50)
-            logger.info(f'sheet_worker - processed {len(jobs)} jobs, sleeping {delay:.0f}s')
-            await asyncio.sleep(delay)
-
-        logger.info(f'sheet_worker - finished, {total} sheets saved')
-        return total
+    def invalid_reason(self, sheet: dict) -> str | None:
+        # O parser sempre devolve `equipamentos`, nem que seja o placeholder. Se não veio
+        # nenhuma especificação junto, a página existe mas não tem ficha nenhuma.
+        specs = {key: value for key, value in sheet.items() if key not in self._FILLER_KEYS}
+        return None if specs else 'page has no technical sheet'
 
     async def _get_automakers(self) -> list[str]:
-        response = await self._factory.get_automakers()
-
-        if response.status != 200:
-            logger.warning(f'get_automakers - unexpected status: {response.status}')
-            return []
-
-        if self._parser.is_captcha(response.content):
-            logger.warning('get_automakers - captcha detected')
-            return []
-
-        automakers = self._parser.automakers(response.content)
-        logger.info(f'get_automakers - found {len(automakers)} automakers')
+        automakers = await self.fetch(
+            'get_automakers', self._factory.get_automakers(), self._parser.automakers, [])
+        self.logger.info(f'get_automakers - found {len(automakers)} automakers')
         return automakers
 
     async def _get_models(self, automaker: str) -> list[str]:
-        response = await self._factory.get_models(automaker)
-
-        if response.status != 200:
-            logger.warning(f'get_models - unexpected status: {response.status}')
-            return []
-
-        if self._parser.is_captcha(response.content):
-            logger.warning(f'{automaker} | get_models - captcha detected')
-            return []
-
-        models = self._parser.models(response.content)
-        logger.info(f'{automaker} | get_models - found {len(models)} models')
+        models = await self.fetch(
+            f'{automaker} | get_models', self._factory.get_models(automaker), self._parser.models, [])
+        self.logger.info(f'{automaker} | get_models - found {len(models)} models')
         return models
 
     async def _get_version_years(self, automaker: str, model: str) -> tuple[dict, list[str]]:
-        response = await self._factory.get_version_years(automaker, model)
-
-        if response.status != 200:
-            logger.warning(f'get_version_years - unexpected status: {response.status}')
-            return {}, []
-
-        if self._parser.is_captcha(response.content):
-            logger.warning(f'{automaker} : {model} | get_version_years - captcha detected')
-            return {}, []
-
-        versions, years = self._parser.version_years(response.content)
-        logger.info(f'{automaker} : {model} | get_version_years - found {len(versions)} versions')
+        versions, years = await self.fetch(
+            f'{automaker} : {model} | get_version_years',
+            self._factory.get_version_years(automaker, model),
+            self._parser.version_years,
+            ({}, []),
+        )
+        self.logger.info(
+            f'{automaker} : {model} | get_version_years - found {len(versions)} versions')
         return versions, years
-
-    async def _technical_sheet(self, automaker: str, model: str, href: str) -> dict:
-        response = await self._factory.get_technical_sheet(automaker, model, href)
-
-        if response.status != 200:
-            logger.warning(f'technical_sheet [{href}] - unexpected status: {response.status}')
-            return {}
-
-        if self._parser.is_captcha(response.content):
-            logger.warning(f'technical_sheet [{href}] - captcha detected')
-            return {}
-
-        sheet = self._parser.technical_sheet(response.content)
-        logger.info(f'technical_sheet [{href}] - parsed')
-        return sheet
