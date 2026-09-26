@@ -79,8 +79,11 @@ class NetworkManager:
 
     @staticmethod
     @asynccontextmanager
-    async def create(cffi_impersonate: str = 'chrome124'):
-        async with aiohttp.ClientSession() as session:
+    async def create(cffi_impersonate: str = 'chrome124', timeout: int = 100,
+                     tcp_limit: int = 90):
+        connector = aiohttp.TCPConnector(limit=tcp_limit)
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(connector=connector, timeout=client_timeout) as session:
             cffi_session = curl_cffi.AsyncSession(impersonate=cffi_impersonate)
             try:
                 yield NetworkManager(session, cffi_session)
