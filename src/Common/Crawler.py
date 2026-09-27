@@ -4,9 +4,36 @@ from typing import Any, Awaitable, Callable
 from src.Model.Job import Job
 from src.Model.JobStatus import JobStatus
 from src.Model.Response import Response
-from src.Common.RateLimiter import RateLimiter
-from src.Common.exceptions import InvalidJobError, RateLimitedError
+from src.Common.utils import RateLimiter
 from src.Common.DatabaseRepository import DatabaseRepository
+
+
+class TechnicalSheetError(Exception):
+    """Base de todos os erros do projeto."""
+
+
+class InvalidSourceError(TechnicalSheetError):
+    """O `source` de um job não corresponde a nenhum crawler registrado."""
+
+    def __init__(self, source: str):
+        super().__init__(f'no crawler registered for source {source!r}')
+        self.source = source
+
+
+class InvalidJobError(TechnicalSheetError):
+    """O job nunca vai dar certo: a referência morreu ou a página não tem ficha.
+
+    Diferente de uma falha temporária, não adianta repetir — o job é fechado
+    como `invalid` sem gastar tentativa.
+    """
+
+
+class RateLimitedError(TechnicalSheetError):
+    """O site recusou por excesso de requisição (429, 503).
+
+    Não é falha do job: ele volta para a fila sem gastar tentativa e a fonte entra em
+    backoff. Repetir na hora só aumenta o bloqueio, então o `repeatable` deixa passar.
+    """
 
 
 class Crawler:
