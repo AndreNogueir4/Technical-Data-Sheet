@@ -28,6 +28,16 @@ class InvalidJobError(TechnicalSheetError):
     """
 
 
+class BlockedSourceError(TechnicalSheetError):
+    """A fonte devolveu página de bloqueio vezes seguidas demais.
+
+    Uma página de anti-scraping solta é ruído e vale seguir em frente. Várias
+    seguidas não são: a fonte fechou a porta, e insistir só produz uma varredura
+    inteira de resultados vazios — que, sem isso, termina com a mesma cara de um
+    catálogo que simplesmente não tinha nada novo.
+    """
+
+
 class RateLimitedError(TechnicalSheetError):
     """O site recusou por excesso de requisição (429, 503).
 
@@ -38,13 +48,15 @@ class RateLimitedError(TechnicalSheetError):
 
 class Crawler:
     def __init__(self, source: str, db: DatabaseRepository, limiter: RateLimiter,
-                 concurrent: int = 30, try_limit: int = 4):
+                 concurrent: int = 30, try_limit: int = 4, max_blocks: int = 5):
         self.source = source
         self.database = db
         self.logger = logging.getLogger(type(self).__module__)
         self._limiter = limiter
         self._semaphore = asyncio.Semaphore(value=concurrent)
         self._try_limit = try_limit
+        self._max_blocks = max_blocks
+        self._blocked_streak = 0
         self._dead_statuses = (404, 410)
         self._throttle_statuses = (429, 503)
 
@@ -78,7 +90,7 @@ class Crawler:
             sheet = await self.fetch_sheet(job)
         except InvalidJobError as error:
             return await self.invalidate(job, str(error))
-        except RateLimitedError as error:
+        except (RateLimitedError, BlockedSourceError) as error:
             return await self.release(job, str(error))
 
         if not sheet:
@@ -95,12 +107,16 @@ class Crawler:
         """Baixa as fichas de uma lista de jobs sem passar pela fila.
 
         Usado pelo `TechnicalSheet.get_list_result` — nada é persistido, as fichas
-        voltam na mesma ordem dos jobs recebidos (um dict vazio onde falhou).
+        voltam carimbadas e na mesma ordem dos jobs recebidos (um dict vazio onde
+        falhou).
         """
         async def fetch(job: Job) -> dict:
             async with self._semaphore:
                 try:
-                    return await self.fetch_sheet(job)
+                    sheet = await self.fetch_sheet(job)
+                    # O dict vazio é a falha: carimbá-lo daria a uma ficha que não
+                    # veio a aparência de uma que veio.
+                    return self.stamp(job, sheet) if sheet else {}
                 except asyncio.CancelledError:
                     raise
                 except InvalidJobError as error:
@@ -159,7 +175,13 @@ class Crawler:
         self.logger.warning(f'{job.label} - {reason}, marked as invalid')
         return job.status
 
-    async def save(self, job: Job, sheet: dict) -> None:
+    def stamp(self, job: Job, sheet: dict) -> dict:
+        """Carimba na ficha a identidade do veículo que ela descreve.
+
+        O que sai do parser são as especificações; quem é o carro está no job. Sem o
+        carimbo a ficha não tem como ser reencontrada — é por estes campos que o
+        `sheet_identity` a reconhece no banco e que a API a devolve.
+        """
         sheet.update({
             'montadora': job.automaker,
             'modelo': job.model,
@@ -168,7 +190,10 @@ class Crawler:
             'reference': job.reference,
             'source': self.source,
         })
-        await self.database.save_sheet(sheet)
+        return sheet
+
+    async def save(self, job: Job, sheet: dict) -> None:
+        await self.database.save_sheet(self.stamp(job, sheet))
 
         job.status = JobStatus.DONE
         await self.database.update_job(
@@ -220,9 +245,36 @@ class Crawler:
             self.logger.warning(f'{label} - unexpected status: {response.status}')
             return empty
 
-        blocked = self.blocked_reason(response.content)
-        if blocked:
-            self.logger.warning(f'{label} - {blocked}')
+        # Corpo vazio com status 200 é falha de transporte, não página sem conteúdo:
+        # proxy que cortou, site que devolveu nada sob carga. A diferença importa —
+        # entregue ao parser, a resposta oca viraria uma ficha vazia, e ficha vazia é
+        # motivo de `invalid`, que é terminal. Assim ela cai no mesmo caminho de quem
+        # não respondeu: o job volta para a fila.
+        if not response.content or not response.content.strip():
+            self.logger.warning(f'{label} - answered {response.status} with an empty body')
             return empty
 
+        blocked = self.blocked_reason(response.content)
+        if blocked:
+            return self.register_block(label, blocked, empty)
+
+        self._blocked_streak = 0
         return parse(response.content)
+
+    def register_block(self, label: str, reason: str, empty: Any) -> Any:
+        """Conta mais uma recusa seguida e desiste da fonte quando viram uma sequência.
+
+        O contador zera no primeiro acerto: o que interessa é a sequência, não o total
+        do dia. Ao estourar ele também zera, para o backoff de quem chamou ter uma
+        rodada limpa antes da próxima desistência.
+        """
+        self._blocked_streak += 1
+        self.logger.warning(
+            f'{label} - {reason} ({self._blocked_streak}/{self._max_blocks} in a row)')
+
+        if self._blocked_streak < self._max_blocks:
+            return empty
+
+        self._blocked_streak = 0
+        raise BlockedSourceError(
+            f'{self.source} refused {self._max_blocks} requests in a row ({reason})')
