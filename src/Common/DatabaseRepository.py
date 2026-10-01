@@ -11,6 +11,10 @@ from src.Model.JobStatus import JobStatus
 class DatabaseRepository:
     """Acesso ao MongoDB. A fila de trabalho vive na collection `job`."""
 
+    # O `_id` é um ObjectId: ele não atravessa JSON, e quem lê a ficha pela API não
+    # tem o que fazer com ele. A identidade que importa é `source` + `reference`.
+    NO_ID = {'_id': 0}
+
     def __init__(self, uri: str = 'mongodb://localhost:27017/',
                  db_name: str = 'technical_sheet'):
         self.client = AsyncIOMotorClient(uri)
@@ -149,6 +153,30 @@ class DatabaseRepository:
         """
         await self.db.vehicle_specs.replace_one(
             self.sheet_identity(sheet), sheet, upsert=True)
+
+    async def find_sheet(self, source: str, reference: str) -> dict | None:
+        """A ficha de uma referência, sem o `_id` do Mongo."""
+        return await self.db.vehicle_specs.find_one(
+            {'source': source, 'reference': reference}, self.NO_ID)
+
+    async def find_sheets(self, query: dict, limit: int = 20, skip: int = 0) -> list[dict]:
+        """Uma página de fichas que batem com `query`.
+
+        A ordem é a do índice `sheet_identity` — `source` e `reference` — e não a de
+        inserção: sem ordem estável, duas páginas seguidas podem repetir uma ficha e
+        pular outra.
+        """
+        cursor = (self.db.vehicle_specs.find(query, self.NO_ID)
+                  .sort([('source', 1), ('reference', 1)]).skip(skip).limit(limit))
+        return await cursor.to_list(length=limit)
+
+    async def count_sheets(self, query: dict) -> int:
+        return await self.db.vehicle_specs.count_documents(query)
+
+    async def find_job_by_reference(self, source: str, reference: str) -> Job | None:
+        """O job de uma referência — é dele que sai o resto da identidade do veículo."""
+        document = await self.db.job.find_one({'source': source, 'reference': reference})
+        return Job.from_document(document) if document else None
 
     @staticmethod
     def sheet_identity(sheet: dict) -> dict:
