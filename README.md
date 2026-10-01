@@ -24,7 +24,7 @@ Os dados são persistidos em **MongoDB** com detecção de mudanças — o crawl
 | Site | Status | Observações |
 |------|--------|-------------|
 | [fichacompleta.com.br](https://www.fichacompleta.com.br) | ✅ Funcional | Suporte a CAPTCHA via proxy |
-| [carrosnaweb.com.br](https://www.carrosnaweb.com.br) | 🔧 Em desenvolvimento | Impersonação de browser + OCR para valores em imagem |
+| [carrosnaweb.com.br](https://www.carrosnaweb.com.br) | 🔧 Em desenvolvimento | Impersonação de browser + OCR para valores em imagem e para o captcha |
 
 ---
 
@@ -64,9 +64,23 @@ Na primeira execução, tudo é baixado. Nas execuções seguintes, apenas vers�
 | User-Agent rotativo | `fake-useragent` |
 | Suporte a proxy | Pool de proxies armazenado no MongoDB |
 | CAPTCHA detection | Fallback automático para proxy ao detectar CAPTCHA |
-| Valores em imagem | **OCR** com `pytesseract` + `Pillow` (carrosnaweb) |
+| CAPTCHA por imagem | **OCR** com `Common/CaptchaManager.py` (carrosnaweb) |
+| Valores em imagem | **OCR** com `Common/CaptchaManager.py` (carrosnaweb) |
 
-> O carrosnaweb renderiza alguns campos críticos (deslocamento, potência, peso, comprimento) como imagens para dificultar scraping. O módulo `Common/utils.py` extrai esses valores via OCR.
+> O carrosnaweb renderiza alguns campos críticos (deslocamento, potência, peso, comprimento) como imagens para dificultar scraping. O `CaptchaManager` extrai esses valores via OCR — é o mesmo Tesseract que lê o captcha, com outro alfabeto.
+
+> **O captcha, e por que ele está aqui.** Antes de servir a ficha, o carrosnaweb
+> às vezes troca a página por uma imagem de quatro caracteres e um formulário. O
+> `CaptchaManager` mostra o que esse tipo de verificação vale contra um scraper:
+> a imagem tem fonte única, contraste alto e nenhum ruído, então binarizar,
+> ampliar e rodar o Tesseract em algumas combinações de limiar e `--psm` já
+> resolve — o manager fica com a leitura mais votada, envia e segue a navegação.
+> O que realmente contém coleta automática é o que está nas outras linhas desta
+> tabela — ritmo de requisição, sessão coerente, reputação de IP.
+>
+> `python sessao_ficha.py 23727 23734 23723` roda esse caminho no terminal: ele
+> desenha o captcha, imprime as leituras do OCR e só pede que você digite se
+> nenhuma delas passar.
 
 ---
 
@@ -78,6 +92,7 @@ Na primeira execução, tudo é baixado. Nas execuções seguintes, apenas vers�
 - **motor** — driver assíncrono para MongoDB
 - **pytesseract + Pillow** — OCR para valores em imagem
 - **colorlog** — logs coloridos e estruturados
+- **FastAPI + uvicorn** — a API que serve as fichas coletadas
 - **dependency-injector** — composition root declarativo
 
 ---
@@ -94,10 +109,19 @@ Technical-Data-Sheet/
 │   │   ├── TechnicalSheet.py            # Runner: CLI, estágios e pool de workers
 │   │   └── TechnicalSheetContainer.py   # Composition root (dependency-injector)
 │   │
+│   ├── Server/                          # Camada HTTP
+│   │   └── TechnicalSheetApi/           # A API das fichas técnicas
+│   │       ├── __main__.py              # Sobe o uvicorn
+│   │       ├── TechnicalSheetApi.py     # App FastAPI + erros do domínio em HTTP
+│   │       ├── TechnicalSheetRouter.py  # As rotas
+│   │       ├── TechnicalSheetService.py # Banco primeiro, fonte quando pedem
+│   │       ├── TechnicalSheetSchema.py  # Contrato de entrada e saída (Pydantic)
+│   │       └── TechnicalSheetApiContainer.py
+│   │
 │   ├── CarrosWeb/                       # Scraper do carrosnaweb
 │   │   ├── CarrosWebCrawler.py          # Orquestrador
-│   │   ├── CarrosWebParser.py           # Parser HTML com OCR
-│   │   ├── CarrosWebRequestFactory.py   # Fábrica de requisições
+│   │   ├── CarrosWebParser.py           # Parser HTML
+│   │   ├── CarrosWebRequestFactory.py   # Requisições, proxy e captcha
 │   │   └── CarrosWebContainer.py        # Peças do site, montadas por DI
 │   │
 │   ├── FichaCompleta/                   # Scraper do fichacompleta
@@ -107,20 +131,27 @@ Technical-Data-Sheet/
 │   │   └── FichaCompletaContainer.py    # Peças do site, montadas por DI
 │   │
 │   ├── Common/                          # Infraestrutura compartilhada
-│   │   ├── crawler.py                   # Classe base de todo crawler de site
-│   │   ├── logger.py                    # LoggerFactory + handler MongoDB
-│   │   ├── settings.py                  # Configuração (variáveis de ambiente)
+│   │   ├── Crawler.py                   # Classe base de todo crawler + erros do domínio
+│   │   ├── CaptchaManager.py            # OCR: captcha e valores em imagem
 │   │   ├── DatabaseRepository.py        # Repositório MongoDB (motor)
 │   │   ├── NetworkManager.py            # Gerenciador de sessões HTTP
-│   │   ├── exceptions.py                # Erros do domínio
-│   │   └── utils.py                     # OCR + normalização de texto
+│   │   ├── settings.py                  # Configuração (variáveis de ambiente)
+│   │   └── utils.py                     # Retry, rate limit, parse de HTML, texto
 │   │
 │   └── Model/
 │       ├── Job.py                       # Job: uma versão de veículo a coletar
+│       ├── JobStatus.py                 # todo / in_progress / done / invalid / error
 │       ├── SheetMode.py                 # Modos de execução (all / catalog / worker)
 │       └── Response.py                  # Dataclass de resposta HTTP
 │
-└── requirements.txt
+├── tests/                               # Suíte sem rede e sem banco
+│   ├── conftest.py                      # Dublês e páginas de exemplo
+│   └── fixtures/                        # HTML com a estrutura das páginas reais
+│
+├── sessao_ficha.py                      # Demonstração do OCR do captcha no terminal
+├── pytest.ini
+├── requirements.txt
+└── requirements-dev.txt
 ```
 
 ---
@@ -206,35 +237,89 @@ python -m src -s carrosweb -m catalog
 python -m src -m worker
 ```
 
+### A API
+
+```bash
+python -m src.Server.TechnicalSheetApi
+```
+
+Sobe em `API_HOST:API_PORT` (default `127.0.0.1:8000`), com a documentação
+interativa em `/docs`. Ela usa o mesmo composition root do crawler: o banco é o
+mesmo, e o runner que a coleta ao vivo empresta é o mesmo que o `python -m src`
+roda.
+
+| Rota | O que faz |
+|------|-----------|
+| `GET /health` | Se o banco responde, quantas fichas ele tem e quais fontes existem |
+| `GET /fichas` | Lista o que já foi coletado — filtra por `source`, `montadora`, `modelo`, `ano`, `versao`, pagina com `limit`/`offset` |
+| `GET /fichas/{source}/{reference}` | Uma ficha. `?ao_vivo=true` manda buscar na fonte quando ela não está no banco |
+| `POST /fichas/coleta` | Coleta uma lista de fichas na fonte, agora |
+
+```bash
+# o que já está no banco (rápido: só lê o Mongo)
+curl 'http://127.0.0.1:8000/fichas?montadora=audi&versao=quattro&limit=5'
+
+# uma ficha pela referência (a barra inicial é opcional)
+curl 'http://127.0.0.1:8000/fichas/fichacompleta/carros/audi/100-2-8-v6-quattro-1993'
+
+# coleta na fonte e guarda no banco
+curl -X POST http://127.0.0.1:8000/fichas/coleta \
+  -H 'content-type: application/json' \
+  -d '{"fichas": [{"source": "fichacompleta", "reference": "/carros/audi/100-2-8-v6-quattro-1993"}]}'
+```
+
+> `GET /fichas` só lê o Mongo e responde em milissegundos. A coleta ao vivo passa
+> pelo mesmo limitador de taxa do crawler — é segundos por ficha, de propósito —, e
+> é por isso que ela é uma rota separada em vez do comportamento padrão. O que ela
+> coleta é gravado no banco (`salvar: false` desliga), então o mesmo pedido na
+> segunda vez sai pelo caminho rápido. Quando a fonte está bloqueando, a resposta é
+> `503` com `Retry-After`, não um `500`.
+
 ### Quanto Tempo Leva
 
-O crawler é lento de propósito: entre uma requisição e outra ele espera um intervalo
-aleatório, senão o site bloqueia. Sirva-se destes números como referência.
+O crawler é lento de propósito. Quem dá o ritmo é o `RateLimiter`: uma requisição a
+cada `1 ÷ REQUESTS_PER_SECOND` segundos, **compartilhada por todos os workers da
+fonte**. Aumentar `WORKER_COUNT` não acelera a coleta — muda só quantos jobs ficam em
+voo esperando a vez. Quem acelera (e derruba) é o `REQUESTS_PER_SECOND`.
+
+```
+tempo ≈ requisições ÷ REQUESTS_PER_SECOND
+```
 
 | Execução | Tempo | Resultado |
 |----------|-------|-----------|
 | `-s fichacompleta -m catalog` | **~1h28** | 120 montadoras, 1.318 modelos, **20.397 jobs** enfileirados |
 
-> Medido com os valores padrão (`MIN_DELAY=10`, `MAX_DELAY=50`), em uma execução do zero
-> com o banco vazio. Reexecuções são bem mais rápidas: o catálogo só enfileira versão
-> que ainda não está na collection `job`.
+> O tempo acima é de antes de o ritmo passar a ser só do limitador: na época o catálogo
+> ainda dormia um intervalo aleatório por modelo, em cima da espera entre requisições.
+> Hoje a conta é a da fórmula acima, e o catálogo do fichacompleta (~1.440 requisições a
+> `0.3` req/s) sai perto de **1h20**. Reexecuções são bem mais rápidas: o catálogo só
+> enfileira versão que ainda não está na collection `job`.
 
-O `worker` é a parte cara. Cada ficha custa uma requisição mais o intervalo entre jobs,
-divididos por `WORKER_COUNT` workers em paralelo — então a conta aproximada é:
+O `worker` é a parte cara: uma requisição por ficha — mais uma por valor que o
+carrosnaweb desenha como imagem. Para os 20.397 jobs do fichacompleta, no padrão de
+`0.3` req/s, dá algo em torno de **19 horas**. É trabalho para deixar rodando em
+`-m worker`, não para esperar sentado — dá para parar com Ctrl+C e retomar depois, que
+a fila continua de onde parou.
 
+> **Não aperte o ritmo para “ir mais rápido” em produção.** Um `REQUESTS_PER_SECOND`
+> alto derruba a coleta: o fichacompleta responde com captcha e o carrosnaweb com
+> página de erro, e o crawler recua sozinho. Suba o valor só para testar o fluxo.
+
+### Testes
+
+```bash
+pip install -r requirements-dev.txt
+pytest
 ```
-tempo ≈ jobs × média(MIN_DELAY, MAX_DELAY) ÷ WORKER_COUNT
-```
 
-Para os 20.397 jobs do fichacompleta, no padrão (30s de média, 10 workers), dá algo em
-torno de **17 horas**. É trabalho para deixar rodando em `-m worker`, não para esperar
-sentado — dá para parar com Ctrl+C e retomar depois, que a fila continua de onde parou.
-
-> **Não aperte os intervalos para “ir mais rápido” em produção.** `MIN_DELAY`/`MAX_DELAY`
-> baixos derrubam a coleta: o fichacompleta responde com captcha e o carrosnaweb com
-> página de erro, e o crawler recua sozinho. Use valores curtos só para testar o fluxo.
+A suíte não toca a rede nem o MongoDB: os sites entram como dublê e as páginas como
+HTML de exemplo em `tests/fixtures`, com a mesma estrutura das reais. Os testes de OCR
+desenham o captcha na hora e são pulados se o sistema não tiver uma fonte TrueType.
 
 ### Variáveis de Ambiente
+
+Todas saem de `src/Common/settings.py`.
 
 | Variável | Default | Descrição |
 |----------|---------|-----------|
@@ -242,12 +327,19 @@ sentado — dá para parar com Ctrl+C e retomar depois, que a fila continua de o
 | `MONGO_DB` | `technical_sheet` | Nome do banco |
 | `WORKER_COUNT` | `10` | Workers simultâneos no pool |
 | `SLEEP_TIME` | `5` | Espera (s) com a fila vazia no modo `worker` |
-| `BATCH_SIZE` | `4` | Jobs reservados por vez, por fonte |
-| `CONCURRENCY` | `2` | Requisições simultâneas do `get_list_result` |
-| `MAX_ATTEMPTS` | `3` | Tentativas antes de um job virar `error` |
+| `BATCH_SIZE` | `10` | Jobs reservados por vez, por fonte |
+| `CONCURRENT` | `30` | Requisições simultâneas por crawler |
+| `TRY_LIMIT` | `4` | Tentativas antes de um job virar `error` |
 | `MAX_FAILURES` | `5` | Falhas seguidas antes de recuar de uma fonte |
-| `MIN_DELAY` / `MAX_DELAY` | `10` / `50` | Intervalo aleatório (s) entre dois jobs |
+| `TIMEOUT` | `100` | Tempo (s) máximo de uma requisição |
+| `TCP_LIMIT` | `90` | Conexões TCP simultâneas do pool do aiohttp |
+| `REQUESTS_PER_SECOND` | `0.3` | Ritmo de cada fonte, somando todos os workers |
 | `CFFI_IMPERSONATE` | `chrome124` | Perfil de browser do `curl_cffi` |
+| `CAPTCHA_LENGTH` | `4` | Quantos caracteres a resposta do captcha tem |
+| `CAPTCHA_ATTEMPTS` | `3` | Leituras do captcha antes de desistir da página |
+| `API_HOST` | `127.0.0.1` | Endereço em que a API escuta |
+| `API_PORT` | `8000` | Porta em que a API escuta |
+| `API_PAGE_SIZE` | `20` | Fichas por página quando o pedido não traz `limit` |
 
 ---
 
@@ -276,7 +368,7 @@ Fila de trabalho: um documento por versão de veículo.
 | `in_progress` | Reservado por um worker |
 | `done` | Ficha coletada e salva em `vehicle_specs` |
 | `invalid` | A página respondeu, mas não existe ficha: referência morta (404) ou página vazia. Não é repetido e o motivo fica no campo `reason` |
-| `error` | Falhou `MAX_ATTEMPTS` vezes seguidas — bloqueio, captcha, rede |
+| `error` | Falhou `TRY_LIMIT` vezes — bloqueio, captcha, rede |
 
 A diferença entre `invalid` e `error` é o que adianta repetir: `error` é problema nosso ou
 do momento e volta para a fila até esgotar as tentativas; `invalid` é problema do dado e
@@ -355,7 +447,8 @@ Os logs são coloridos por nível e referência, escritos tanto no terminal quan
 - [x] CLI unificada (`-s` source + `-m` mode)
 - [x] Injeção de dependência via composition root (`TechnicalSheetContainer`)
 - [x] Pool de workers compartilhado entre as fontes (`TechnicalSheet`)
-- [ ] Testes unitários
+- [x] API HTTP das fichas (`src/Server/TechnicalSheetApi`)
+- [x] Testes unitários (`pytest`, sem rede e sem banco)
 - [ ] Docker + docker-compose
 
 ---
