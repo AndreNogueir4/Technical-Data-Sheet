@@ -1,6 +1,5 @@
 motor
 lxml
-colorlog
 fake-useragent
 unidecode
 aiohttp
@@ -9,3 +8,5 @@ yarl
 Pillow
 pytesseract
 dependency-injector
+fastapi
+uvicorn
